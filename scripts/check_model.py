@@ -5,8 +5,8 @@ Prints what PhysX *actually* loaded (joint order, limits, drive gains, link
 masses), verifies the bucket-tip offset, then drives a scripted dig cycle so
 you can see the soil model produce depth, resistance force and bucket fill.
 
-    ./isaaclab.sh -p scripts/check_model.py                  # with a viewport
-    ./isaaclab.sh -p scripts/check_model.py --headless       # numbers only
+    ~/IsaacLab/isaaclab.sh -p scripts/check_model.py                  # with a viewport
+    ~/IsaacLab/isaaclab.sh -p scripts/check_model.py --headless       # numbers only
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import excavator_rl  # noqa: F401,E402
 from excavator_rl.digging_env_cfg import DiggingEnvCfg  # noqa: E402
-from excavator_rl.excavator_cfg import BUCKET_TIP_OFFSET  # noqa: E402
+from excavator_rl.excavator_params import BUCKET_TIP_OFFSET  # noqa: E402
 
 
 def banner(txt: str) -> None:
@@ -44,12 +44,14 @@ def main() -> None:
     cfg = DiggingEnvCfg()
     cfg.scene.num_envs = 1
     cfg.debug_vis = not args_cli.headless
+    if args_cli.device is not None:
+        cfg.sim.device = args_cli.device
     if args_cli.usd:
-        cfg.usd_path = args_cli.usd
-        cfg.robot.spawn.usd_path = args_cli.usd
+        cfg.usd_path = os.path.abspath(os.path.expanduser(args_cli.usd))
+        cfg.robot.spawn.usd_path = cfg.usd_path
     if not os.path.isfile(cfg.usd_path):
         raise FileNotFoundError(
-            f"excavator USD not found at '{cfg.usd_path}' -- run scripts/convert_urdf.py "
+            f"excavator USD not found at '{cfg.usd_path}' -- run scripts/setup_assets.sh "
             "or pass --usd"
         )
 

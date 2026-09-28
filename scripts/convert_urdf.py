@@ -34,15 +34,16 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from excavator_rl.excavator_cfg import (  # noqa: E402
+# excavator_params is pure python, so this works before Isaac Sim is started
+# (and with --fix-only, without Isaac Sim at all)
+from excavator_rl.excavator_params import (  # noqa: E402
     EFFORT_LIMITS,
     JOINT_LIMITS,
-    VELOCITY_DRIVE_DAMPING,
     VELOCITY_LIMITS,
 )
 
-#: viscous damping written into the URDF, ~2 % of the drive damping: enough to
-#: keep the solver calm without making the joints feel like treacle.
+#: passive viscous damping written into the URDF, 2 % of effort / v_max: enough
+#: to keep the solver calm without making the joints feel like treacle.
 JOINT_DAMPING_FRACTION = 0.02
 JOINT_FRICTION = {
     "base_chassis_joint": 5.0e3,
@@ -73,14 +74,22 @@ def fix_urdf(src: str, dst_dir: str) -> str:
             f"no meshes/ directory next to {src} (looked in {mesh_dir_candidates})"
         )
 
+    # keep a copy of the meshes next to the fixed URDF so the asset folder is
+    # self-contained, and point every package:// or relative mesh URI at it
+    local_meshes = os.path.join(dst_dir, "meshes")
+    if os.path.abspath(mesh_dir) != os.path.abspath(local_meshes):
+        os.makedirs(local_meshes, exist_ok=True)
+        for f in os.listdir(mesh_dir):
+            if f.lower().endswith((".stl", ".obj", ".dae")):
+                shutil.copy2(os.path.join(mesh_dir, f), os.path.join(local_meshes, f))
+
     n_mesh = 0
     for mesh in root.iter("mesh"):
         fn = mesh.get("filename", "")
-        if fn.startswith("package://"):
-            base = os.path.basename(fn)
-            abs_path = os.path.join(mesh_dir, base)
+        if fn.startswith("package://") or not os.path.isabs(fn):
+            abs_path = os.path.join(local_meshes, os.path.basename(fn))
             if not os.path.isfile(abs_path):
-                raise FileNotFoundError(f"{abs_path} referenced by the URDF is missing")
+                raise FileNotFoundError(f"mesh '{os.path.basename(fn)}' referenced by the URDF is missing in {mesh_dir}")
             mesh.set("filename", abs_path)
             n_mesh += 1
 
@@ -106,20 +115,13 @@ def fix_urdf(src: str, dst_dir: str) -> str:
         dyn = joint.find("dynamics")
         if dyn is None:
             dyn = ET.SubElement(joint, "dynamics")
-        dyn.set("damping", f"{VELOCITY_DRIVE_DAMPING[name] * JOINT_DAMPING_FRACTION:.6g}")
+        passive = JOINT_DAMPING_FRACTION * EFFORT_LIMITS[name] / VELOCITY_LIMITS[name]
+        dyn.set("damping", f"{passive:.6g}")
         dyn.set("friction", f"{JOINT_FRICTION.get(name, 1.0e3):.6g}")
         n_joint += 1
 
     out = os.path.join(dst_dir, "excavator_fixed.urdf")
     tree.write(out, encoding="utf-8", xml_declaration=True)
-
-    # keep a copy of the meshes next to the fixed URDF so the asset is portable
-    local_meshes = os.path.join(dst_dir, "meshes")
-    if os.path.abspath(mesh_dir) != os.path.abspath(local_meshes):
-        os.makedirs(local_meshes, exist_ok=True)
-        for f in os.listdir(mesh_dir):
-            if f.lower().endswith((".stl", ".obj", ".dae")):
-                shutil.copy2(os.path.join(mesh_dir, f), os.path.join(local_meshes, f))
 
     print(f"  fixed {n_mesh} mesh paths and {n_joint} joints -> {out}")
     return out

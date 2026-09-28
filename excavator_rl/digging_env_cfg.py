@@ -12,22 +12,26 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
-from .excavator_cfg import (
+from .excavator_cfg import excavator_cfg
+from .excavator_params import (
     ARM_JOINTS,
     BUCKET_OPEN_DIR,
     BUCKET_TIP_OFFSET,
     BUCKET_WIDTH,
     SWING_JOINT,
     VELOCITY_LIMITS,
-    excavator_cfg,
 )
 from .soil import SoilCfg
 
-#: Location of the excavator USD.  Override with the EXCAVATOR_USD environment
-#: variable, or set ``cfg.usd_path`` directly.
-DEFAULT_USD = os.environ.get(
-    "EXCAVATOR_USD",
-    os.path.expanduser("~/excavator_assets/excavator.usd"),
+#: Repository root (the folder that contains ``excavator_rl/``).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: Location of the excavator USD.  ``scripts/setup_assets.sh`` writes it to
+#: ``assets/usd/excavator.usd`` inside this repository.  Override with the
+#: EXCAVATOR_USD environment variable, ``--usd`` on the scripts, or by setting
+#: ``cfg.usd_path`` directly.
+DEFAULT_USD = os.path.expanduser(
+    os.environ.get("EXCAVATOR_USD", os.path.join(REPO_ROOT, "assets", "usd", "excavator.usd"))
 )
 
 #: bucket-link centre of mass, from the USD mass properties [m, bucket frame]
