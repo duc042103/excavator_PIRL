@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excavator-rl"
+version = "0.1.0"
+description = "Autonomous excavator digging task for Isaac Lab (MathScavator9000, ~36 t class)"
+readme = "README.md"
+requires-python = ">=3.10"
+# torch, gymnasium, isaaclab and rsl-rl all come from the Isaac Lab
+# installation -- deliberately not pinned here so pip cannot pull a second,
+# conflicting torch into the Isaac Sim environment.
+dependencies = []
+
+[project.optional-dependencies]
+tools = ["usd-core"]
+
+[tool.setuptools.packages.find]
+include = ["excavator_rl*"]
