@@ -11,6 +11,7 @@ flip, rewards that go NaN.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import types
@@ -262,13 +263,74 @@ def test_no_nan_under_random_state():
 
 
 def test_observation_width_matches_the_config():
-    from excavator_rl.excavator_cfg import ARM_JOINTS, VELOCITY_LIMITS  # noqa: F401
-
     for n_act in (3, 4):
         declared = 3 * n_act + 3 + 4
         built = n_act + n_act + n_act + 3 + 1 + 1 + 1 + 1
         check(f"observation width consistent for {n_act} actions", declared == built,
               f"cfg says {declared}, _get_observations builds {built}")
+
+
+class _Composer:
+    """Records what DiggingEnv hands to Isaac Lab's WrenchComposer."""
+
+    def __init__(self):
+        self.calls = []
+
+    def set_forces_and_torques(self, **kw):
+        self.calls.append(kw)
+
+
+def test_soil_wrench_is_sent_in_the_bucket_frame():
+    """The soil force must reach PhysX as a *local* wrench, rotated with the
+    current bucket orientation (Isaac Lab 2.3 rotates global wrenches with a
+    stale cached pose, so the env must never rely on is_global=True)."""
+    env = make_env()
+    env.step_dt = 1.0 / 30.0
+    env._pos_attr, env._quat_attr = "body_pos_w", "body_quat_w"
+    env._vel_attr, env._angvel_attr, env._vel_is_com = "body_lin_vel_w", "body_ang_vel_w", False
+    env._tip_offset = torch.tensor([[0.0, -1.835, -0.04]]).repeat(N, 1)
+    env._com_offset = torch.tensor([[0.0, -1.03, -0.25]]).repeat(N, 1)
+    env._open_dir_b = torch.tensor([[0.0, 0.0, 1.0]]).repeat(N, 1)
+    env._bucket_ids_t = torch.tensor([env._bucket_id])
+    env._wrench_composer = _Composer()
+
+    # bucket pivot 7.5 m out, yawed 90 deg about z, moving inwards; the cutting
+    # edge sits 0.24 m below the soil surface
+    c, s_ = math.cos(math.pi / 4), math.sin(math.pi / 4)
+    quat = torch.tensor([c, 0.0, 0.0, s_])
+    data = env.robot.data
+    data.body_pos_w[:, env._bucket_id] = torch.tensor([0.0, 7.5, -0.2])
+    data.body_quat_w = torch.zeros(N, 5, 4)
+    data.body_quat_w[:, :, 0] = 1.0
+    data.body_quat_w[:, env._bucket_id] = quat
+    data.body_lin_vel_w = torch.zeros(N, 5, 3)
+    data.body_lin_vel_w[:, env._bucket_id] = torch.tensor([0.0, -1.0, 0.0])
+    data.body_ang_vel_w = torch.zeros(N, 5, 3)
+    env.soil.fill[:] = 0.5
+
+    env._update_soil()
+    check("one wrench call per control step", len(env._wrench_composer.calls) == 1)
+    kw = env._wrench_composer.calls[0]
+    check("wrench is passed as local (is_global=False)", kw.get("is_global") is False)
+    check("wrench shapes are (N, 1, 3)", tuple(kw["forces"].shape) == (N, 1, 3)
+          and tuple(kw["torques"].shape) == (N, 1, 3))
+
+    q = quat.repeat(N, 1)
+    q_inv = q * torch.tensor([1.0, -1.0, -1.0, -1.0])
+    f_soil = env._soil_out["force"]
+    check("soil pushes back on the bucket", float(f_soil.norm(dim=1).min()) > 1.0e3,
+          f"{float(f_soil.norm(dim=1).min()):.0f} N")
+    f_w = f_soil.clone()
+    f_w[:, 2] -= env.soil.fill_mass * 9.81
+    r_tip = _quat_apply(q, env._tip_offset)
+    r_com = _quat_apply(q, env._com_offset)
+    t_w = torch.cross(r_tip - r_com, f_soil, dim=1)
+    check("force rotated into the bucket frame",
+          torch.allclose(kw["forces"][:, 0], _quat_apply(q_inv, f_w), atol=1e-2))
+    check("torque about the COM, in the bucket frame",
+          torch.allclose(kw["torques"][:, 0], _quat_apply(q_inv, t_w), atol=1e-2))
+    check("rotating back gives the world force",
+          torch.allclose(_quat_apply(q, kw["forces"][:, 0]), f_w, atol=1e-2))
 
 
 if __name__ == "__main__":
@@ -283,6 +345,7 @@ if __name__ == "__main__":
         test_vortex_reward_matches_the_paper_shape,
         test_no_nan_under_random_state,
         test_observation_width_matches_the_config,
+        test_soil_wrench_is_sent_in_the_bucket_frame,
     ]:
         print(f"\n{fn.__name__}")
         fn()

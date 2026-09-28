@@ -6,6 +6,14 @@ compared (REINFORCE / DDPG / PPO / TRPO), with PPO the more stable of the two
 Their single-environment Vortex setup needed ~1000 episodes / <10 h on an
 RTX 2060; with 4096 parallel environments the same experience arrives in
 minutes.
+
+The config works with both rsl_rl generations shipped by Isaac Lab:
+
+* Isaac Lab 2.2 / rsl-rl-lib 2.3.x: observation normalisation is the runner
+  level ``empirical_normalization`` flag.
+* Isaac Lab 2.3 / rsl-rl-lib 3.x: normalisation moved into the policy
+  (``actor_obs_normalization`` / ``critic_obs_normalization``) and the runner
+  needs ``obs_groups``.  Leaving those unset crashes rsl_rl 3.x.
 """
 
 from isaaclab.utils import configclass
@@ -23,6 +31,25 @@ except ImportError:  # pragma: no cover - Isaac Lab 1.x layout
         RslRlPpoAlgorithmCfg,
     )
 
+#: True for Isaac Lab >= 2.3 (rsl-rl-lib >= 3.0)
+_NEW_RSL_RL_API = "actor_obs_normalization" in getattr(RslRlPpoActorCriticCfg, "__dataclass_fields__", {})
+
+#: running mean/std normalisation of the observations (tip xyz is in metres,
+#: the rest is roughly unit scale)
+OBS_NORMALIZATION = True
+
+_policy_kwargs = dict(
+    init_noise_std=0.8,
+    actor_hidden_dims=[256, 128, 64],
+    critic_hidden_dims=[256, 128, 64],
+    activation="elu",
+)
+if _NEW_RSL_RL_API:
+    _policy_kwargs.update(
+        actor_obs_normalization=OBS_NORMALIZATION,
+        critic_obs_normalization=OBS_NORMALIZATION,
+    )
+
 
 @configclass
 class ExcavatorPPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -30,14 +57,15 @@ class ExcavatorPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations: int = 3000
     save_interval: int = 100
     experiment_name: str = "excavator_digging"
-    empirical_normalization: bool = True
 
-    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
-        init_noise_std=0.8,
-        actor_hidden_dims=[256, 128, 64],
-        critic_hidden_dims=[256, 128, 64],
-        activation="elu",
-    )
+    if _NEW_RSL_RL_API:
+        # the env returns a single "policy" observation group; the critic sees
+        # the same observations (no privileged state)
+        obs_groups: dict = {"policy": ["policy"], "critic": ["policy"]}
+    else:
+        empirical_normalization: bool = OBS_NORMALIZATION
+
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(**_policy_kwargs)
 
     algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

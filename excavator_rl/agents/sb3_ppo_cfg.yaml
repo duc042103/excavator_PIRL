@@ -1,0 +1,26 @@
+# PPO for Stable-Baselines3 (Isaac Lab 2.3 format).
+# SB3 steps the environments through numpy on the CPU, so it is much slower
+# than rsl_rl / skrl / rl_games -- use ~512-1024 envs.  Kept as a reference
+# implementation to compare against.
+seed: 42
+
+n_timesteps: !!float 1e8
+policy: 'MlpPolicy'
+n_steps: 32
+n_minibatches: 4  # batch_size = n_steps * num_envs / n_minibatches
+gae_lambda: 0.95
+gamma: 0.99
+n_epochs: 5
+ent_coef: 0.006
+learning_rate: !!float 3e-4
+clip_range: !!float 0.2
+policy_kwargs:
+  activation_fn: 'nn.ELU'
+  net_arch:
+    pi: [256, 128, 64]
+    vf: [256, 128, 64]
+  log_std_init: -0.22
+target_kl: 0.02
+vf_coef: 1.0
+max_grad_norm: 1.0
+device: "cuda:0"

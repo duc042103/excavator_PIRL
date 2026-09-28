@@ -26,8 +26,6 @@ What necessarily changes
 
 from __future__ import annotations
 
-import inspect
-
 import torch
 
 import isaaclab.sim as sim_utils
@@ -41,7 +39,7 @@ except ImportError:  # pragma: no cover - older naming
     from isaaclab.utils.math import quat_rotate as quat_apply
 
 from .digging_env_cfg import DiggingEnvCfg
-from .excavator_cfg import ARM_JOINTS, BUCKET_LINK, EFFORT_LIMITS, SWING_JOINT
+from .excavator_params import ARM_JOINTS, BUCKET_LINK, EFFORT_LIMITS, SWING_JOINT
 from .soil import SoilModel
 
 
@@ -91,11 +89,11 @@ class DiggingEnv(DirectRLEnv):
             "spilled": torch.zeros(self.num_envs, device=self.device),
         }
 
-        # whether this Isaac Lab build lets us pass a world-frame wrench
-        self._ext_global = (
-            "is_global"
-            in inspect.signature(self.robot.set_external_force_and_torque).parameters
-        )
+        # Isaac Lab >= 2.3 routes external wrenches through a WrenchComposer and
+        # logs a deprecation warning on every set_external_force_and_torque call
+        # (i.e. 30 times a second here); use the composer directly when present.
+        self._wrench_composer = getattr(self.robot, "permanent_wrench_composer", None)
+        self._bucket_ids_t = torch.tensor([self._bucket_id], device=self.device, dtype=torch.long)
 
         # resolve the (version dependent) body state accessors once
         data = self.robot.data
@@ -128,6 +126,9 @@ class DiggingEnv(DirectRLEnv):
         ground.func("/World/ground", ground, translation=(0.0, 0.0, self.cfg.ground_z))
 
         self.scene.clone_environments(copy_from_source=False)
+        # CPU PhysX needs the cloned environments' collisions filtered explicitly
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[])
         self.scene.articulations["robot"] = self.robot
 
         light = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.9, 0.9, 0.92))
@@ -189,19 +190,25 @@ class DiggingEnv(DirectRLEnv):
         # external wrenches act at the COM, so move the tip force there
         torque_w = torch.cross(r_tip - r_com, out["force"], dim=1)
 
-        if self._ext_global:
-            f, t = force_w, torque_w
-            kwargs = {"is_global": True}
-        else:
-            # this build interprets the wrench in the body frame
-            quat_inv = quat * torch.tensor([1.0, -1.0, -1.0, -1.0], device=self.device)
-            f = quat_apply(quat_inv, force_w)
-            t = quat_apply(quat_inv, torque_w)
-            kwargs = {}
+        # Rotate into the bucket link frame ourselves and always pass a *local*
+        # wrench.  The world-frame option is not safe to rely on: Isaac Lab 2.3's
+        # WrenchComposer converts global wrenches with link poses it caches until
+        # the next reset, i.e. with a stale bucket orientation.
+        quat_inv = quat * torch.tensor([1.0, -1.0, -1.0, -1.0], device=self.device)
+        f = quat_apply(quat_inv, force_w)
+        t = quat_apply(quat_inv, torque_w)
+        self._set_bucket_wrench(f, t)
 
-        self.robot.set_external_force_and_torque(
-            f.unsqueeze(1), t.unsqueeze(1), body_ids=[self._bucket_id], **kwargs
-        )
+    def _set_bucket_wrench(self, force_b: torch.Tensor, torque_b: torch.Tensor, env_ids=None) -> None:
+        """Hold a body-frame wrench (applied at the COM) on the bucket until changed."""
+        f = force_b.unsqueeze(1).contiguous()
+        t = torque_b.unsqueeze(1).contiguous()
+        if self._wrench_composer is not None:
+            self._wrench_composer.set_forces_and_torques(
+                forces=f, torques=t, body_ids=self._bucket_ids_t, env_ids=env_ids, is_global=False
+            )
+        else:
+            self.robot.set_external_force_and_torque(f, t, body_ids=[self._bucket_id], env_ids=env_ids)
 
     # ------------------------------------------------------------------ #
     # observations
@@ -376,8 +383,8 @@ class DiggingEnv(DirectRLEnv):
         pos = getattr(self.robot.data, self._pos_attr)[:, self._bucket_id]
         self._prev_height[env_ids] = (pos - self.scene.env_origins)[env_ids, 2]
 
-        zero = torch.zeros(len(env_ids), 1, 3, device=self.device)
-        self.robot.set_external_force_and_torque(zero, zero, body_ids=[self._bucket_id], env_ids=env_ids)
+        zero = torch.zeros(len(env_ids), 3, device=self.device)
+        self._set_bucket_wrench(zero, zero, env_ids=env_ids)
 
     # ------------------------------------------------------------------ #
     # visualisation (optional, never fatal)

@@ -1,0 +1,14 @@
+# Keep LF line endings in the repository even when committing from Windows,
+# otherwise bash scripts fail on Ubuntu with "/usr/bin/env: 'bash\r'".
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+
+# binary assets
+*.STL binary
+*.stl binary
+*.usd binary
+*.usdc binary
+*.dae binary
+*.obj binary
+*.png binary
