@@ -351,7 +351,20 @@ It is not a replacement for Isaac Sim: PyBullet's velocity motors are stiff cons
 at the effort limit (Isaac Lab uses a damped drive), and it runs ~700 control steps/s instead of
 hundreds of thousands.
 
-<!-- TWIN-RESULTS -->
+Trial run on the twin (16 environments, dense reward, default hyper-parameters except the
+rollout length; one CPU core per algorithm):
+
+| Algorithm | Env steps | Success rate (last 200 episodes) | Episode length | First ≥ 90 % success |
+|---|---|---|---|---|
+| PPO (27 discrete actions) | 154 k | 100 % | 78 steps (2.6 s) | 103 k steps |
+| TRPO | 1.02 M | 100 % | 75 steps (2.5 s) | 309 k steps |
+| DDPG | 334 k (stopped) | 100 % | 60 steps (2.0 s) | 180 k steps |
+| REINFORCE | 1.02 M | 52 % | 461 steps | — (still improving) |
+
+The ranking matches vortexRL's findings (PPO / DDPG fastest, REINFORCE slowest). The learned
+policies dig a real cycle — plunge to ~1.2 m, scoop the bucket full, lift — but in ~2.5 s,
+about 2–3× faster than a real 36 t machine, because the model has no hydraulic power / flow
+limit (section 14).
 
 ---
 
@@ -467,14 +480,20 @@ PPO hyper-parameters: `excavator_rl/agents/`; vortexRL algorithms: `excavator_rl
 ## 14. Known limitations
 
 - **No real hydraulics.** Commands are joint velocities, not valve flow / cylinder pressure
-  (the CAD has no cylinder linkage).
+  (the CAD has no cylinder linkage). There is no shared pump-flow or engine-power limit either:
+  all joints can move at full speed under full load at the same time, so learned dig cycles
+  (~2.5 s for dig + lift, ~500 kW at the teeth) are faster than a real 36 t machine
+  (~200 kW engine). Adding a power budget on the joint commands is the recommended next step
+  before drawing real-world conclusions.
 - **1-D soil.** With `control_swing` the bed is still a radial profile, independent of the
   slew angle.
 - **No tracks / travel.** The root is fixed; "autonomous" means automating the dig cycle.
 - **Sim-to-real.** Masses and inertias come from solid CAD (SolidWorks) — use domain
   randomisation before transferring to a real machine.
-- **Not yet run in Isaac Sim by the authors of these changes.** Everything was validated with
-  the unit tests and the PyBullet twin (section 8); hyper-parameters may need tuning in Isaac Sim.
+- **Not yet verified in Isaac Sim.** The code was validated with the unit tests and the
+  PyBullet twin (section 8), where all four vortexRL algorithms learn the task. Isaac Sim's
+  damped drives and PhysX solver differ, so run `check_model.py` first and expect to tune
+  hyper-parameters.
 
 ---
 
