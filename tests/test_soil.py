@@ -85,8 +85,13 @@ def test_drag_fills_the_bucket():
 
 
 def test_carving_is_idempotent():
-    """Re-sweeping the same trench must not create material out of nothing."""
-    soil = make(1)
+    """Re-sweeping the same trench must not create material out of nothing.
+
+    Slumping is switched off here: with it, the trench walls collapse into the
+    trench and a second pass legitimately picks that material up (covered by
+    test_volume_is_conserved_with_slumping)."""
+    soil = SoilModel(SoilCfg(repose_iters=0), 1, "cpu")
+    soil.reset(randomize=False)
     for _ in range(2):
         for k in range(60):
             tip = torch.tensor([[0.0, 8.0 - 0.05 * k, -0.3]])
@@ -98,6 +103,43 @@ def test_carving_is_idempotent():
         soil.step(tip, torch.tensor([[0.0, -1.0, 0.0]]), up(1), DT)
     check("an already-cut trench yields nothing more", abs(float(soil.fill[0]) - before) < 1e-6)
     check("moved volume is conserved", abs(float(soil.moved_volume()[0]) - first_pass_volume) < 1e-6)
+
+
+def test_volume_is_conserved_with_slumping():
+    """Bed + bucket volume stays constant through digging, slumping and spilling."""
+    cfg = SoilCfg(fill_efficiency=1.0, capacity=50.0)
+    soil = SoilModel(cfg, 1, "cpu")
+    soil.reset(randomize=False)
+    bed = lambda: float(soil.height.sum()) * soil.dr * cfg.bucket_width  # noqa: E731
+    total0 = bed()
+    for _ in range(3):
+        for k in range(60):
+            soil.step(torch.tensor([[0.0, 8.0 - 0.05 * k, -0.4]]), torch.tensor([[0.0, -1.5, 0.0]]), up(1), DT)
+    tipped = torch.tensor([[0.0, -1.0, -0.2]]) / torch.linalg.norm(torch.tensor([0.0, -1.0, -0.2]))
+    for _ in range(20):                                    # dump part of it back, out of the soil
+        soil.step(torch.tensor([[0.0, 7.0, 2.0]]), torch.zeros(1, 3), tipped, DT)
+    err = abs(bed() + float(soil.fill[0]) - total0)
+    check("bed + bucket volume conserved", err < 1e-3, f"error {err:.2e} m^3, fill {float(soil.fill[0]):.2f} m^3")
+
+
+def test_cut_depth_is_measured_against_undisturbed_soil():
+    """Dragging at constant depth keeps meeting the full cut thickness."""
+    soil = make(1)
+    depths = []
+    for k in range(60):
+        out = soil.step(torch.tensor([[0.0, 8.0 - 0.02 * k, -0.5]]), torch.tensor([[0.0, -0.6, 0.0]]), up(1), DT)
+        depths.append(float(out["depth"][0]))
+    check("cut depth stays at the blade depth while dragging", min(depths[5:]) > 0.45,
+          f"min {min(depths[5:]):.2f} m (blade 0.50 m deep)")
+
+
+def test_no_spill_while_cutting():
+    soil = make(1)
+    soil.fill[0] = 0.8
+    facing_cab = torch.tensor([[0.0, -1.0, 0.0]])                 # opening towards the machine
+    for k in range(30):
+        soil.step(torch.tensor([[0.0, 8.0 - 0.02 * k, -0.4]]), torch.tensor([[0.0, -0.6, 0.0]]), facing_cab, DT)
+    check("payload stays in while the teeth are in the soil", float(soil.fill[0]) >= 0.8)
 
 
 def test_spill():
@@ -168,6 +210,9 @@ if __name__ == "__main__":
         test_force_opposes_motion,
         test_drag_fills_the_bucket,
         test_carving_is_idempotent,
+        test_volume_is_conserved_with_slumping,
+        test_cut_depth_is_measured_against_undisturbed_soil,
+        test_no_spill_while_cutting,
         test_spill,
         test_batched_envs_are_independent,
         test_reset_randomisation,

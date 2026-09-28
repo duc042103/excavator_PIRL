@@ -70,7 +70,7 @@ class DiggingEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=64,
-        env_spacing=30.0,          # 10.8 m reach + soil bed -> keep them apart
+        env_spacing=30.0,          # 11.1 m reach + soil bed -> keep them apart
         replicate_physics=True,
     )
 

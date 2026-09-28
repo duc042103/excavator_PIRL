@@ -10,8 +10,8 @@ Every number below was read out of the CAD-derived assets, not guessed:
 
 Machine class
 -------------
-boom 6.24 m, stick 2.98 m, bucket pivot->cutting-edge 1.835 m, bucket width
-1.148 m, max tip reach 10.8 m, moving mass 33.1 t (chassis 17.4 + boom 7.2 +
+boom 6.24 m, stick 2.98 m, bucket pivot->tooth tips 2.18 m, bucket width
+1.148 m, max tooth reach 11.1 m, moving mass 33.1 t (chassis 17.4 + boom 7.2 +
 stick 3.3 + bucket 5.1).  That is a ~36 t class machine -- the same class as
 the Vortex Studio model in hanzunye/vortexRL, which is why the RL setup ports
 over with only unit changes.
