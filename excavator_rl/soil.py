@@ -21,14 +21,21 @@ almost every large-scale excavation-RL paper uses:
     velocity and is applied at the cutting edge, so it produces the correct
     reaction torque on stick and boom as well.
 
-3.  **Material transfer** -- swept-min carving.  Cells the cutting edge passes
-    through are lowered to the edge's height; the displaced volume goes into
-    the bucket up to its rated capacity.  Geometrically exact and
-    unconditionally stable (no CFL condition, no explosion at large dt).
+    The cutting depth ``d`` is measured against the *undisturbed* soil around
+    the blade (the highest cell within ``carve_halfwidth``), i.e. the soil the
+    edge is about to cut, not the trench it has already left behind.
 
-4.  **Spillage** -- when the bucket opening tips more than `spill_angle` away
-    from vertical the payload drains out with a first-order time constant, and
-    the soil is returned to the cell underneath.
+3.  **Material transfer** -- swept-min carving.  Cells the cutting edge swept
+    through since the previous step are lowered to the edge's height; the
+    displaced volume goes into the bucket up to its rated capacity.
+    Geometrically exact and unconditionally stable (no CFL condition, no
+    explosion at large dt).
+
+4.  **Spillage** -- when the teeth are out of the soil and the bucket opening
+    tips more than `spill_angle` away from vertical, the payload drains out
+    with a first-order time constant and is returned to the bed.  While the
+    edge is cutting, material is being pressed into the bucket and does not
+    flow out (a backhoe drags with its opening facing the cab).
 
 The model is deliberately free of Isaac Lab imports so it can be unit-tested on
 a laptop with nothing but torch -- see ``tests/test_soil.py``.
@@ -49,7 +56,7 @@ class SoilCfg:
     r_min: float = 3.0
     """Inner radius of the soil bed, measured from the swing axis [m]."""
     r_max: float = 11.0
-    """Outer radius of the soil bed [m].  Max tip reach is 10.8 m."""
+    """Outer radius of the soil bed [m].  The teeth reach 10.9 m at ground level."""
     num_cells: int = 160
     """Number of radial cells.  (r_max - r_min) / num_cells = 5 cm here."""
     base_height: float = 0.0
@@ -132,6 +139,8 @@ class SoilModel:
         self.cohesion = torch.full((num_envs,), cfg.cohesion, device=self.device)
         #: (num_envs,) penetration depth of the last step [m]
         self.depth = torch.zeros(num_envs, device=self.device)
+        #: (num_envs,) radius of the cutting edge at the previous step (NaN = none yet)
+        self.prev_r = torch.full((num_envs,), float("nan"), device=self.device)
 
     # ------------------------------------------------------------------ #
     # episode handling
@@ -162,6 +171,7 @@ class SoilModel:
         self.fill[env_ids] = 0.0
         self.cohesion[env_ids] = coh
         self.depth[env_ids] = 0.0
+        self.prev_r[env_ids] = float("nan")
 
     # ------------------------------------------------------------------ #
     # queries
@@ -221,11 +231,15 @@ class SoilModel:
         r = torch.linalg.norm(tip_pos[:, :2], dim=1)
         z = tip_pos[:, 2]
 
-        surf = self.surface_height(r)
         inside = (r > cfg.r_min) & (r < cfg.r_max)
         if in_bed is not None:
             inside = inside & in_bed
 
+        # cut thickness: undisturbed soil around the blade (the highest cell
+        # within carve_halfwidth), not the trench already carved behind it
+        near = (self.r_centers.unsqueeze(0) - r.unsqueeze(1)).abs() <= max(cfg.carve_halfwidth, self.dr)
+        surf = torch.where(near, self.height, torch.full_like(self.height, -1e9)).amax(dim=1)
+        surf = torch.maximum(surf, self.surface_height(r))
         depth = (surf - z).clamp(min=0.0, max=cfg.max_depth)
         depth = torch.where(inside, depth, torch.zeros_like(depth))
         self.depth = depth
@@ -253,10 +267,14 @@ class SoilModel:
         # ---------------- carve + fill ------------------------------------
         d_fill = torch.zeros_like(depth)
         digging = depth > 1e-4
+        prev_r = torch.where(torch.isnan(self.prev_r), r, self.prev_r)
         if digging.any():
-            # cells within carve_halfwidth of the tip get cut down to the tip z
-            dist = (self.r_centers.unsqueeze(0) - r.unsqueeze(1)).abs()
-            mask = (dist <= cfg.carve_halfwidth) & digging.unsqueeze(1)
+            # cells the edge swept through since the previous step get cut
+            # down to the edge height
+            lo = torch.minimum(prev_r, r) - 0.5 * self.dr
+            hi = torch.maximum(prev_r, r) + 0.5 * self.dr
+            rc = self.r_centers.unsqueeze(0)
+            mask = (rc >= lo.unsqueeze(1)) & (rc <= hi.unsqueeze(1)) & digging.unsqueeze(1)
             target = z.unsqueeze(1).expand_as(self.height)
             new_h = torch.where(mask, torch.minimum(self.height, target), self.height)
             carved = (self.height - new_h) * self.dr * w        # (N, C) volume
@@ -267,9 +285,13 @@ class SoilModel:
             self.fill = self.fill + gained
             d_fill = gained
 
+        self.prev_r = r.clone()
+
         # ---------------- spillage ----------------------------------------
+        # only once the teeth are out of the soil: while cutting, material is
+        # pressed into the bucket (which drags with its opening facing the cab)
         tilt = torch.acos(open_dir_w[:, 2].clamp(-1.0, 1.0))
-        spilling = (tilt > cfg.spill_angle) & (self.fill > 0.0)
+        spilling = (tilt > cfg.spill_angle) & (self.fill > 0.0) & ~digging
         spilled = torch.zeros_like(self.fill)
         if spilling.any():
             keep = torch.exp(torch.tensor(-dt / cfg.spill_tau, device=self.device))

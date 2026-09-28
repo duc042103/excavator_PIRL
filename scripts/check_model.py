@@ -2,8 +2,8 @@
 """Sanity-check the excavator before spending GPU hours on RL.
 
 Prints what PhysX *actually* loaded (joint order, limits, drive gains, link
-masses), verifies the bucket-tip offset, then drives a scripted dig cycle so
-you can see the soil model produce depth, resistance force and bucket fill.
+masses), verifies the bucket-tip offset, then runs a scripted IK dig cycle
+(excavator_rl/scripted.py) that must fill the bucket and complete the task.
 
     ~/IsaacLab/isaaclab.sh -p scripts/check_model.py                  # with a viewport
     ~/IsaacLab/isaaclab.sh -p scripts/check_model.py --headless       # numbers only
@@ -19,7 +19,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Inspect the excavator articulation and soil model.")
 parser.add_argument("--usd", type=str, default=None)
-parser.add_argument("--cycle_s", type=float, default=14.0, help="length of the scripted dig cycle")
+parser.add_argument("--cycle_s", type=float, default=14.0, help="length of the scripted dig cycle [s]")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -33,7 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import excavator_rl  # noqa: F401,E402
 from excavator_rl.digging_env_cfg import DiggingEnvCfg  # noqa: E402
-from excavator_rl.excavator_params import BUCKET_TIP_OFFSET  # noqa: E402
+from excavator_rl.excavator_params import ARM_JOINTS, BUCKET_TIP_OFFSET, VELOCITY_LIMITS  # noqa: E402
+from excavator_rl.scripted import ArmKinematics, ScriptedDigger  # noqa: E402
 
 
 def banner(txt: str) -> None:
@@ -100,50 +101,44 @@ def main() -> None:
     print(f"  reach r = {torch.linalg.norm(local[:2]):.2f} m,  z = {local[2]:+.2f} m")
     print(f"  bucket opening points      : {open_dir[0].tolist()}  (z ~ +1 = curled/holding)")
     print(f"  soil surface under the tip : {env.soil.surface_height(torch.linalg.norm(local[:2]).unsqueeze(0))[0]:+.2f} m")
-    print("\n  If the edge is not where you expect, adjust BUCKET_TIP_OFFSET in excavator_cfg.py.")
+    print("\n  If the edge is not where you expect, adjust BUCKET_TIP_OFFSET in excavator_params.py.")
 
-    banner(f"SCRIPTED DIG CYCLE ({args_cli.cycle_s:.0f} s)  [boom, stick, bucket] in [-1, 1]")
+    banner("SCRIPTED DIG CYCLE (IK expert: bite, drag, curl, lift)")
+    env.reset()
+    expert = ScriptedDigger(ArmKinematics(), torch.tensor([VELOCITY_LIMITS[jn] for jn in ARM_JOINTS]))
+    arm_ids = robot.find_joints(ARM_JOINTS, preserve_order=True)[0]
     dt = env.step_dt
-    n = int(args_cli.cycle_s / dt)
-    print(f"{'t':>6} {'phase':<10} {'depth':>7} {'F_soil':>10} {'fill':>7} {'fill_kg':>9} {'tip_z':>7} {'pivot_z':>8}")
-
-    for k in range(n):
+    print(f"{'t':>6} {'phase':<10} {'depth':>7} {'F_soil':>10} {'fill':>7} {'fill_kg':>9} {'tooth_z':>8} {'pivot_z':>8}")
+    peak_fill, moved, success = 0.0, 0.0, False
+    for k in range(int(args_cli.cycle_s / dt)):
         t = k * dt
-        if t < 2.0:
-            phase, a = "penetrate", [-0.6, 0.0, 0.0]        # boom down
-        elif t < 6.0:
-            phase, a = "drag", [-0.1, -0.7, 0.35]           # stick in, bucket curling
-        elif t < 8.0:
-            phase, a = "curl", [0.15, -0.3, 0.9]            # close the bucket
-        elif t < 12.0:
-            phase, a = "lift", [1.0, -0.2, 0.15]            # boom up
-        else:
-            phase, a = "hold", [0.2, 0.0, 0.0]
-
-        act = torch.tensor([a], device=env.device)
-        env.step(act)
-
+        moved = float(env.soil.moved_volume()[0])  # read before a success resets the soil
+        a = expert.action(t, data.joint_pos[0, arm_ids].cpu())
+        _, _, term, _, _ = env.step(a.unsqueeze(0).float().to(env.device))
+        if bool(term[0]):
+            success = True
+            print(f"{t:>6.1f} SUCCESS -- bucket lifted to {cfg.lift_height} m with soil")
+            break
+        peak_fill = max(peak_fill, float(env.soil.fill_ratio[0]))
         if k % int(0.5 / dt) == 0:
             p, _, tw, _, _, _, _ = env._bucket_state()
             tl = (tw - env.scene.env_origins)[0]
             pv = (p - env.scene.env_origins)[0]
             f = torch.linalg.norm(env._soil_out["force"][0])
             print(
-                f"{t:>6.1f} {phase:<10} {env._soil_out['depth'][0]:>7.3f} "
+                f"{t:>6.1f} {expert.phase(t):<10} {env._soil_out['depth'][0]:>7.3f} "
                 f"{f:>10.0f} {env.soil.fill_ratio[0]:>7.2f} {env.soil.fill_mass[0]:>9.0f} "
-                f"{tl[2]:>7.2f} {pv[2]:>8.2f}"
+                f"{tl[2]:>8.2f} {pv[2]:>8.2f}"
             )
 
     banner("RESULT")
-    print(f"  peak bucket fill : {env.soil.fill_ratio[0]:.2f} of capacity "
-          f"({env.soil.fill_mass[0]:.0f} kg)")
-    print(f"  soil displaced   : {env.soil.moved_volume()[0]:.2f} m^3")
-    print(f"  lift target      : {cfg.lift_height:.1f} m, reached "
-          f"{(pos - env.scene.env_origins)[0,2]:.2f} m")
+    print(f"  peak bucket fill : {peak_fill:.2f} of capacity (target {cfg.target_fill})")
+    print(f"  soil displaced   : {moved:.2f} m^3")
+    print(f"  task completed   : {success}")
     print(
-        "\n  A hand-written cycle will not be optimal -- it only has to show "
-        "non-zero depth, resistance force and fill.  If all three stay at zero, "
-        "fix the tip offset or the soil bed radii before training."
+        "\n  The IK expert completes the task in tools/pybullet_twin.py.  If it fails here, the Isaac Sim\n"
+        "  articulation behaves differently (drive gains, limits, joint signs): compare the tables above\n"
+        "  with `python tools/pybullet_twin.py check` before training."
     )
     env.close()
 

@@ -35,17 +35,21 @@ BUCKET_LINK = "stick_bucket_link"
 # --------------------------------------------------------------------------- #
 BOOM_LENGTH = 6.24
 STICK_LENGTH = 2.9796
-BUCKET_RADIUS = 1.835                   # pivot -> cutting edge
+BUCKET_RADIUS = 2.178                   # pivot -> tooth tips
 BUCKET_WIDTH = 1.148                    # cutting edge span (X extent of mesh)
 
-#: cutting edge in the bucket-link frame.  At q_bucket = 0 the bucket is fully
-#: curled and the edge points back at the machine (-Y); at q_bucket = -2.27 rad
-#: it is fully open, edge pointing outward and down -- the dig-entry attitude.
-BUCKET_TIP_OFFSET = (0.0, -1.835, -0.04)
+#: tooth tips (the cutting edge) in the bucket-link frame, from the STL: the
+#: teeth run across the bucket width at y = -1.813, z = +1.207.  (An earlier
+#: version used (0, -1.835, -0.04), the front corner of the shell ~1.2 m
+#: behind the teeth -- see tools/pybullet_twin.py, which checks this.)
+#: At q_bucket = 0 the bucket is curled, the teeth point back at the machine
+#: and up; at q_bucket = -2.27 rad it is fully open.
+BUCKET_TIP_OFFSET = (0.0, -1.813, 1.207)
 
-#: direction the bucket opening faces, in the bucket-link frame (+Z when
-#: curled).  Used by the soil model to decide when the payload spills out.
-BUCKET_OPEN_DIR = (0.0, 0.0, 1.0)
+#: direction the bucket opening faces, in the bucket-link frame: the normal of
+#: the rim chord from the pivot to the tooth tips, pointing out of the shell.
+#: Used by the soil model to decide when the payload spills out.
+BUCKET_OPEN_DIR = (0.0, 0.554, 0.832)
 
 #: base_link origin sits this far above the bottom of the tracks, so spawning
 #: the root at this height puts the machine exactly on a ground plane at z = 0.
@@ -66,7 +70,7 @@ JOINT_LIMITS = {
 # --------------------------------------------------------------------------- #
 # actuator envelope for a ~36 t machine (Cat 336 class reference figures)
 #
-#   bucket: 175 kN tip digging force x 1.835 m  ->  3.2e5 N.m
+#   bucket: 175 kN tip digging force x 1.9 m    ->  3.3e5 N.m
 #   stick : 145 kN tip force        x ~3.5 m    ->  5.0e5 N.m
 #   boom  : holds arm+payload (~19 t at ~5 m)   ->  9.3e5 N.m static,
 #                                                   1.5e6 N.m with margin
@@ -107,11 +111,13 @@ VELOCITY_DRIVE_DAMPING = {
     j: VELOCITY_TRACKING_GAIN * EFFORT_LIMITS[j] / VELOCITY_LIMITS[j] for j in ALL_JOINTS
 }
 
-#: dig-entry pose: bucket tip on the ground 7.5 m out, cutting edge pointing
-#: outward and 30 deg down from vertical.  Solved with the FK chain above.
+#: dig-entry pose: tooth tips on the soil surface (z = 0) 7.5 m out, teeth
+#: pointing 75 deg below horizontal, bucket opening facing the machine --
+#: ready to drag the bucket towards the cab.  Solved with the URDF kinematics
+#: (tools/pybullet_twin.py prints where the teeth end up).
 DEFAULT_JOINT_POS = {
     SWING_JOINT: 0.0,
-    BOOM_JOINT: 0.410,
-    STICK_JOINT: -0.083,
-    BUCKET_JOINT: -1.746,
+    BOOM_JOINT: 0.473,
+    STICK_JOINT: 0.019,
+    BUCKET_JOINT: -1.928,
 }
