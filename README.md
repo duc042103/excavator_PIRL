@@ -8,8 +8,12 @@ Task và reward port từ [hanzunye/vortexRL](https://github.com/hanzunye/vortex
 (Han & Stein, KIT — *Applying Reinforcement Learning to Digital Twin of Excavator to Dig
 Automatically*), vốn chạy trên Vortex Studio với 1 môi trường.
 
-Bước đầu dùng các **thuật toán RL có sẵn trong Isaac Lab**: PPO của 4 thư viện
-`rsl_rl`, `skrl`, `rl_games`, `Stable-Baselines3`.
+Thuật toán RL có 2 nhóm:
+
+- **Có sẵn trong Isaac Lab**: PPO của 4 thư viện `rsl_rl`, `skrl`, `rl_games`,
+  `Stable-Baselines3` (mục 6.1–6.2).
+- **4 thuật toán của vortexRL** — REINFORCE, PPO, TRPO, DDPG — viết lại bằng PyTorch để chạy
+  hàng nghìn môi trường song song trên GPU (mục 6.4, thư mục `excavator_rl/algorithms/`).
 
 ---
 
@@ -21,7 +25,7 @@ Bước đầu dùng các **thuật toán RL có sẵn trong Isaac Lab**: PPO c�
 3. [Cài project này](#3-cài-project-này)
 4. [Chuẩn bị model máy xúc (URDF → USD)](#4-chuẩn-bị-model-máy-xúc-urdf--usd)
 5. [Kiểm tra model trước khi train](#5-kiểm-tra-model-trước-khi-train)
-6. [Train bằng các thuật toán RL có sẵn](#6-train-bằng-các-thuật-toán-rl-có-sẵn)
+6. [Train bằng các thuật toán RL có sẵn](#6-train-bằng-các-thuật-toán-rl-có-sẵn) · [Thuật toán vortexRL](#64-4-thuật-toán-của-vortexrl-reinforce--ppo--trpo--ddpg)
 7. [Xem policy đã train](#7-xem-policy-đã-train)
 8. [Lỗi thường gặp](#8-lỗi-thường-gặp)
 9. [Thiết kế task](#9-thiết-kế-task) · [Soil model](#10-soil-model) · [Model máy xúc](#11-model-máy-xúc-đã-kiểm-tra-và-sửa) · [Tham số](#12-các-tham-số-hay-chỉnh) · [Giới hạn](#13-giới-hạn-đã-biết) · [Cấu trúc](#14-cấu-trúc-thư-mục)
@@ -40,6 +44,7 @@ scripts/setup_assets.sh                                              # URDF -> a
 ~/IsaacLab/isaaclab.sh -p scripts/check_model.py --headless          # kiểm tra model + soil
 ~/IsaacLab/isaaclab.sh -p scripts/train.py --num_envs 4096 --headless  # train PPO (rsl_rl)
 ~/IsaacLab/isaaclab.sh -p scripts/play.py                             # xem checkpoint mới nhất
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo ddpg --headless # thuật toán vortexRL (mục 6.4)
 tensorboard --logdir logs                                             # theo dõi
 ```
 
@@ -119,9 +124,10 @@ pip install -e .          # tuỳ chọn: cho phép `import excavator_rl` từ b
 # test nhanh, KHÔNG cần Isaac Sim (chỉ cần torch):
 python tests/test_soil.py      # soil model: lực, bóc đất, rơi vãi, bảo toàn thể tích
 python tests/test_reward.py    # reward, phase machine, wrench đất lên gàu
+python tests/test_algorithms.py  # 4 thuật toán vortexRL học được một bài toán mẫu (~1 phút)
 ```
 
-Cả hai phải in `all ... tests passed`.
+Cả ba phải in `all ... tests passed`.
 
 ---
 
@@ -254,8 +260,68 @@ Ví dụ override: `... run_rl.py skrl train --headless agent.agent.learning_rat
 tensorboard --logdir ~/excavator_PIRL/logs      # mở http://localhost:6006
 ```
 
-Chỉ số đáng xem: `Train/mean_reward`, `Train/mean_episode_length` (giảm = đào xong nhanh hơn),
-`Loss/*`. Máy chủ qua SSH: `ssh -L 6006:localhost:6006 user@máy`.
+Chỉ số đáng xem — rsl_rl: `Train/mean_reward`, `Train/mean_episode_length` (giảm = đào xong
+nhanh hơn); thuật toán vortexRL (mục 6.4): `Episode/return`, `Episode/success_rate`,
+`Episode/length`. Máy chủ qua SSH: `ssh -L 6006:localhost:6006 user@máy`.
+
+### 6.4 4 thuật toán của vortexRL: REINFORCE · PPO · TRPO · DDPG
+
+[vortexRL](https://github.com/hanzunye/vortexRL) so sánh 4 thuật toán (TensorFlow, 1 môi trường
+Vortex). Ở đây chúng được viết lại bằng PyTorch trong `excavator_rl/algorithms/`, giữ kiến
+trúc và siêu tham số đặc trưng của bản gốc, nhưng chạy song song hàng nghìn môi trường:
+
+| `--algo` | Loại | Action | Giữ từ vortexRL | Số env mặc định |
+|---|---|---|---|---|
+| `reinforce` | on-policy, Monte-Carlo, không critic | rời rạc 27 = {−1,0,+1}³ | softmax policy, loss −G·log π, baseline cho return | 512 |
+| `ppo` | on-policy, actor-critic | rời rạc 27 (mặc định) hoặc liên tục | clip 0.2, λ 0.97, lr 3e-4 / 1e-3, dừng sớm khi KL > 1.5×0.01 | 4096 |
+| `trpo` | on-policy, trust region | liên tục (Gauss) | log-var độc lập trạng thái, value net riêng, λ 0.98 | 1024 |
+| `ddpg` | off-policy, actor-critic | liên tục | actor/critic 400-300, nhiễu OU, τ 5e-3, lr 5e-4, replay buffer | 256 |
+
+```bash
+cd ~/excavator_PIRL
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo ppo       --headless
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo trpo      --headless
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo ddpg      --headless
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo reinforce --headless
+
+# xem kết quả (checkpoint mới nhất của thuật toán đó)
+~/IsaacLab/isaaclab.sh -p scripts/play_algo.py --algo ppo
+```
+
+| Tuỳ chọn | Ý nghĩa |
+|---|---|
+| `--max_iterations N` | số vòng lặp (mặc định 1500; thử nhanh: 20) |
+| `--num_envs N` | mặc định theo bảng trên |
+| `--cfg key=value ...` | đổi siêu tham số, tên trường xem ở `excavator_rl/algorithms/<algo>.py` |
+| `--reward_mode vortex` | dùng đúng reward phân đoạn của vortexRL |
+| `--resume <file.pt>` | train tiếp (DDPG: replay buffer được nạp lại từ đầu) |
+| `--seed`, `--run_name`, `--usd` | như mục 6.1 |
+
+Ví dụ:
+
+```bash
+# PPO liên tục (như PPO_agentcontinuous.py) thay vì 27 action rời rạc
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo ppo --headless --cfg action_type=continuous
+# TRPO với vùng tin cậy nhỏ như vortexRL (kl_targ 0.003)
+~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo trpo --headless --cfg max_kl=0.003
+# so sánh đúng như paper: reward vortex cho cả 4 thuật toán
+for a in reinforce ppo trpo ddpg; do
+  ~/IsaacLab/isaaclab.sh -p scripts/train_algo.py --algo $a --headless --reward_mode vortex --run_name vortex
+done
+```
+
+Kết quả: `logs/<algo>/excavator_digging/<ngày>_<giờ>/` gồm `model_<vòng>.pt`, `model_final.pt`,
+`config.json` và log TensorBoard. So sánh cả 4 trên cùng biểu đồ: `tensorboard --logdir logs`.
+
+Khác biệt so với bản gốc (có ghi rõ trong docstring từng file):
+- Cập nhật theo lô `horizon × num_envs` bước thay vì theo từng episode của 1 môi trường.
+- Time-out được xử lý đúng: PPO/TRPO bootstrap bằng critic; DDPG không lưu transition bị cắt
+  vì reset (quan sát kế tiếp đã là trạng thái mới).
+- REINFORCE chỉ dùng các bước có return Monte-Carlo gần đầy đủ (episode kết thúc trong lượt
+  rollout, hoặc còn ≥ 3/(1−γ) bước phía sau).
+- TRPO của vortexRL thực chất là biến thể phạt KL (code của P. Coady); bản này cài TRPO đúng
+  theo paper: gradient tự nhiên (conjugate gradient) + line search giới hạn KL.
+- γ = 0.99 ở 30 Hz cho cả 4 (vortexRL dùng γ = 0.9 ở 2 Hz ≈ 0.993 ở 30 Hz).
 
 ---
 
@@ -271,6 +337,10 @@ Chỉ số đáng xem: `Train/mean_reward`, `Train/mean_episode_length` (giảm 
 ~/IsaacLab/isaaclab.sh -p scripts/run_rl.py skrl play --num_envs 4
 ~/IsaacLab/isaaclab.sh -p scripts/run_rl.py rl_games play --num_envs 4
 ~/IsaacLab/isaaclab.sh -p scripts/run_rl.py sb3 play --num_envs 4
+
+# thuật toán vortexRL (mục 6.4)
+~/IsaacLab/isaaclab.sh -p scripts/play_algo.py --algo ddpg
+~/IsaacLab/isaaclab.sh -p scripts/play_algo.py --checkpoint logs/trpo/excavator_digging/<run>/model_1500.pt
 ```
 
 ---
@@ -302,7 +372,7 @@ Chỉ số đáng xem: `Train/mean_reward`, `Train/mean_episode_length` (giảm 
 | Đất | particle/mesh hybrid solver | soil model giải tích (mục 10) |
 | Reward | phân đoạn (đào → nâng), toàn giá trị âm | `dense` (mặc định) hoặc `vortex` (port nguyên bản) |
 | Kết thúc | gàu đủ đất & cao > 4.2 m | như trên (`target_fill=0.6`, `lift_height=4.2 m`) |
-| Thuật toán | REINFORCE / DDPG / PPO / TRPO, 1 env | PPO (rsl_rl / skrl / rl_games / sb3), 4096 env |
+| Thuật toán | REINFORCE / DDPG / PPO / TRPO, 1 env | REINFORCE / DDPG / PPO / TRPO (mục 6.4) + PPO của rsl_rl / skrl / rl_games / sb3, hàng nghìn env |
 
 `reward_mode="vortex"` port đúng `Reward/RewardDDPG.py`. Bản gốc dùng chuỗi `if` (không phải
 `elif`) nên nhánh `M < M_old` bị nhánh `else` ghi đè — ở đây implement theo **ý định** của tác
@@ -384,8 +454,9 @@ Siêu tham số PPO: các file trong `excavator_rl/agents/`.
 - **Không có xích/di chuyển.** Root cố định; "tự động" ở đây là tự động hóa chu trình đào.
 - **Sim-to-real.** Khối lượng/quán tính lấy từ CAD đặc (SolidWorks) — cần domain randomization
   nếu định chuyển sang máy thật.
-- **Mới dùng PPO.** Các thuật toán off-policy (SAC, TD3, DDPG — vortexRL có so sánh DDPG) chưa
-  được cấu hình; đó là bước tiếp theo.
+- **Thuật toán vortexRL chưa được tinh chỉnh trên máy xúc thật trong Isaac Sim.** Chúng đã
+  được kiểm tra học được trên bài toán mẫu (`tests/test_algorithms.py`); siêu tham số trên
+  task đào có thể cần chỉnh (`--cfg`).
 
 ---
 
@@ -400,16 +471,18 @@ excavator_PIRL/
 │   ├── soil.py                # soil model giải tích (torch thuần)
 │   ├── digging_env_cfg.py     # config task
 │   ├── digging_env.py         # DirectRLEnv: obs / action / reward / reset
-│   └── agents/                # PPO: rsl_rl (.py), skrl / rl_games / sb3 (.yaml)
+│   ├── agents/                # PPO: rsl_rl (.py), skrl / rl_games / sb3 (.yaml)
+│   └── algorithms/            # vortexRL: reinforce.py, ppo.py, trpo.py, ddpg.py (PyTorch thuần)
 ├── scripts/
 │   ├── setup_assets.sh        # tìm URDF -> sửa -> convert USD
 │   ├── convert_urdf.py        # sửa URDF + convert sang USD
 │   ├── check_model.py         # kiểm tra model + chu kỳ đào viết tay
 │   ├── train.py / play.py     # PPO rsl_rl
-│   └── run_rl.py              # chạy script train/play chính thức của Isaac Lab
+│   ├── run_rl.py              # chạy script train/play chính thức của Isaac Lab
+│   └── train_algo.py / play_algo.py  # 4 thuật toán vortexRL
 ├── assets/                    # đặt MathScavator9000_flat/ ở đây; usd/ được sinh ra
 ├── tools/inspect_usd.py       # đọc USD không cần Isaac Sim
-└── tests/                     # test_soil.py, test_reward.py (không cần Isaac Sim)
+└── tests/                     # test_soil / test_reward / test_algorithms (không cần Isaac Sim)
 ```
 
 ---
@@ -417,5 +490,5 @@ excavator_PIRL/
 ## Credits
 
 - Excavator CAD/URDF: [mathworks-robotics/autonomous-excavator](https://github.com/mathworks-robotics/autonomous-excavator)
-- Task, reward, RL setup: [hanzunye/vortexRL](https://github.com/hanzunye/vortexRL) — Yunze Han, Alexander Stein (KIT)
+- Task, reward, RL setup, 4 thuật toán REINFORCE / DDPG / PPO / TRPO: [hanzunye/vortexRL](https://github.com/hanzunye/vortexRL) — Yunze Han, Alexander Stein (KIT)
 - Simulator & RL framework: [Isaac Sim](https://developer.nvidia.com/isaac/sim), [Isaac Lab](https://github.com/isaac-sim/IsaacLab)
